@@ -1,15 +1,15 @@
-using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
 using TMPro;
 using UnityEngine.UI;
+using UnityEngine.Events;
 
 public class SafeUIController : MonoBehaviour
 {
-    [Header("Referanslar")]
+    [Header("References")]
     public SafeController safeController;
+    [SerializeField] private string canvasName = "SafeCanvas";
 
-    [Header("UI Elemanlarý")]
+    [Header("UI Elements")]
     public TextMeshProUGUI codeDisplay;
     public Button[] numberButtons;
     public Button clearButton;
@@ -17,53 +17,32 @@ public class SafeUIController : MonoBehaviour
     public Image[] lightIndicators;
     public Button closeButton;
 
-    [Header("Ayarlar")]
+    [Header("Settings")]
+    public string correctCode = "2105333";
     public Color correctColor = Color.green;
     public Color wrongColor = Color.red;
 
-    private string currentCode = "";
-    private string correctCode = "2105333";
-    private int maxAttempts;
+    [Header("Events (Manager EntegrasyonlarÄ±)")]
+    public UnityEvent onButtonPressed;
+    public UnityEvent onCorrectCode;
+    public UnityEvent onWrongCode;
+    public UnityEvent onPermanentlyLocked;
 
-    // Save System için Public yaptýk
+    private string currentCode = "";
+    private int maxAttempts;
+    
+    // Save System iÃ§in
     public int attemptCount = 0;
     public bool isLocked = false;
     public bool isCodeCorrect = false;
-
-    public void SetCorrectCode(string newCode)
-    {
-        correctCode = newCode;
-    }
-
-    // --- YENÝ EKLENEN LOAD METODU ---
-    public void LoadState(int attempts, bool locked, bool open)
-    {
-        attemptCount = attempts;
-        isLocked = locked;
-        isCodeCorrect = open;
-
-        if (isLocked)
-        {
-            codeDisplay.text = "KASA KILITLENDI";
-            if (safeController != null) safeController.lockedText = "Kasa Kilitlendi";
-        }
-        else if (isCodeCorrect)
-        {
-            codeDisplay.text = correctCode;
-            UpdateLight(lightIndicators.Length - 1, correctColor);
-        }
-        else
-        {
-            // Eðer arada bir yerdeysek ýþýklarý güncelle
-            if (attemptCount > 0) UpdateLight(attemptCount - 1, wrongColor);
-        }
-    }
 
     void Awake()
     {
         maxAttempts = lightIndicators.Length;
         foreach (Button btn in numberButtons)
+        {
             btn.onClick.AddListener(() => AddDigit(btn.GetComponentInChildren<TextMeshProUGUI>().text));
+        }
 
         clearButton.onClick.AddListener(ClearCode);
         enterButton.onClick.AddListener(CheckCode);
@@ -75,15 +54,42 @@ public class SafeUIController : MonoBehaviour
     void Start()
     {
         if (CanvasManager.Instance != null)
-            CanvasManager.Instance.RegisterCanvas("SafeCanvas", gameObject);
+            CanvasManager.Instance.RegisterCanvas(canvasName, gameObject);
         else
             gameObject.SetActive(false);
+    }
+
+    public void LoadState(int attempts, bool locked, bool open)
+    {
+        attemptCount = attempts;
+        isLocked = locked;
+        isCodeCorrect = open;
+
+        if (isLocked)
+        {
+            codeDisplay.text = "KASA KILITLENDI";
+            if (safeController != null) safeController.isPermanentlyLocked = true;
+        }
+        else if (isCodeCorrect)
+        {
+            codeDisplay.text = correctCode;
+            UpdateLight(lightIndicators.Length - 1, correctColor);
+        }
+        else
+        {
+            for (int i = 0; i < attemptCount; i++)
+            {
+                UpdateLight(i, wrongColor);
+            }
+        }
     }
 
     private void AddDigit(string digit)
     {
         if (isLocked || isCodeCorrect) return;
-        if (VoiceManager.Instance != null) VoiceManager.Instance.PlayButtonPressed();
+        
+        onButtonPressed?.Invoke();
+
         if (currentCode.Length < correctCode.Length)
         {
             currentCode += digit;
@@ -93,7 +99,7 @@ public class SafeUIController : MonoBehaviour
 
     private void ClearCode()
     {
-        if (VoiceManager.Instance != null) VoiceManager.Instance.PlayButtonPressed();
+        onButtonPressed?.Invoke();
         currentCode = "";
         if (!isLocked && !isCodeCorrect) codeDisplay.text = "-------";
     }
@@ -101,33 +107,36 @@ public class SafeUIController : MonoBehaviour
     private void CheckCode()
     {
         if (isLocked || isCodeCorrect) return;
-        if (VoiceManager.Instance != null) VoiceManager.Instance.PlayButtonPressed();
-
+        
+        onButtonPressed?.Invoke();
         attemptCount++;
+
         if (currentCode == correctCode)
         {
-            if (VoiceManager.Instance != null) VoiceManager.Instance.safeOpenSound();
-            UpdateLight(attemptCount - 1, correctColor);
             isCodeCorrect = true;
+            UpdateLight(attemptCount - 1, correctColor);
+            onCorrectCode?.Invoke(); // Ses ve GÃ¶revler buradan tetiklenir
+            
             if (safeController != null) safeController.OpenSafeDoor();
-            Invoke("CloseUI", 1.5f);
-            TaskManager.Instance.CompleteTask("task_find_diary");
+            Invoke(nameof(CloseUI), 1.5f);
         }
         else
         {
-            LightManager.Instance.TriggerErrorEffect();
-            if (VoiceManager.Instance != null) VoiceManager.Instance.SafeErrorSound();
+            onWrongCode?.Invoke(); // IÅŸÄ±k patlama efekti ve hata sesi buradan tetiklenir
             UpdateLight(attemptCount - 1, wrongColor);
+            
             if (attemptCount >= maxAttempts)
             {
                 isLocked = true;
                 codeDisplay.text = "KASA KILITLENDI";
-                Invoke("CloseUI", 1.5f);
-                if (safeController != null) safeController.isUnlocked = true; // Kilitlendi
+                if (safeController != null) safeController.isPermanentlyLocked = true;
+                
+                onPermanentlyLocked?.Invoke();
+                Invoke(nameof(CloseUI), 1.5f);
             }
             else
             {
-                Invoke("ClearCode", 1.5f);
+                Invoke(nameof(ClearCode), 1.5f);
             }
         }
     }
@@ -148,17 +157,8 @@ public class SafeUIController : MonoBehaviour
 
     public void OpenSafeUI()
     {
-        if (safeController != null && safeController.isUnlocked) return;
+        if (safeController != null && (safeController.isUnlocked || safeController.isPermanentlyLocked)) return;
 
-        if (CanvasManager.Instance != null)
-        {
-            CanvasManager.Instance.OpenCanvas("SafeCanvas");
-        }
-        else
-        {
-            gameObject.SetActive(true);
-            Cursor.lockState = CursorLockMode.None;
-            Cursor.visible = true;
-        }
+        if (CanvasManager.Instance != null) CanvasManager.Instance.OpenCanvas(canvasName);
     }
 }
